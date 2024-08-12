@@ -1,7 +1,8 @@
 use std::ffi::{c_void, CStr, CString};
 use std::{ptr, thread};
+use std::fmt::format;
 use std::time::Duration;
-use libc::{close, execv, fflush, fork, getpid, O_APPEND, O_RDONLY, O_RDWR, open, STDOUT_FILENO, tcflush, wait, waitpid, WCONTINUED, WNOHANG, write};
+use libc::{c_int, close, dup2, execv, fdopen, fflush, fork, getpid, O_APPEND, O_RDONLY, O_RDWR, open, pipe, read, STDOUT_FILENO, tcflush, wait, waitpid, WCONTINUED, WNOHANG, write};
 
 pub fn part_1() {
     unsafe {
@@ -131,36 +132,63 @@ pub fn part_7() {
 
 pub fn part_8() {
     unsafe {
+        let mut pipefd: [c_int; 2] = [0; 2];
+        if pipe(pipefd.as_mut_ptr()) < 0 {
+            panic!("failed to pipe()");
+        }
+
         let rc = fork();
-        let rc_2 = fork();
-        if rc < 0 || rc_2 < 0 {
+        if rc < 0 {
             panic!("failed to fork()");
         }
 
         if rc == 0 {
-            let exec_name= CString::new("/usr/bin/printf").unwrap();
+            println!("in child process rc");
+            let exec_name = CString::new("/usr/bin/printf").unwrap();
             let exec_arg = CString::new("\"%s\n\"").unwrap();
             let exec_arg_2 = CString::new("\"hi\"").unwrap();
 
             let exec_ptr = exec_name.as_ptr();
             let args = vec![exec_arg.as_ptr(), exec_arg_2.as_ptr(), ptr::null()];
 
-            execv(exec_ptr, args.as_ptr());
-        } else {
-            waitpid(rc, &mut WNOHANG, 0);
-        }
-
-        if rc_2 == 0 {
-            let exec_name= CString::new("/usr/bin/printf").unwrap();
-            let exec_arg = CString::new("\"%s\n\"").unwrap();
-            let exec_arg_2 = CString::new("\"hi\"").unwrap();
-
-            let exec_ptr = exec_name.as_ptr();
-            let args = vec![exec_arg.as_ptr(), exec_arg_2.as_ptr(), ptr::null()];
+            close(STDOUT_FILENO);
+            dup2(pipefd[1], STDOUT_FILENO);
+            close(pipefd[0]);
+            close(pipefd[1]);
 
             execv(exec_ptr, args.as_ptr());
+            panic!("execv failed");
         } else {
-            waitpid(rc_2, &mut WNOHANG, 0);
+            let rc_2 = fork();
+            if rc_2 < 0 {
+                panic!("failed to fork()");
+            }
+
+            if rc_2 == 0 {
+                println!("in child process rc_2");
+                waitpid(rc, ptr::null_mut(), 0);
+
+                close(pipefd[1]);
+                let mut buf = [0u8; 1024];
+                let n = read(pipefd[0], buf.as_mut_ptr() as *mut _, buf.len());
+                if n > 0 {
+                    let result = String::from_utf8_lossy(&buf[..n as usize]);
+                    println!("Received from rc: {}", result);
+                }
+
+                let exec_name = CString::new("/usr/bin/printf").unwrap();
+                let exec_arg = CString::new("\"%s\n\"").unwrap();
+                let exec_arg_2 = CString::new(format!("\"{}\"", String::from_utf8_lossy(&buf[..n as usize]))).unwrap();
+
+                let exec_ptr = exec_name.as_ptr();
+                let args = vec![exec_arg.as_ptr(), exec_arg_2.as_ptr(), ptr::null()];
+
+                execv(exec_ptr, args.as_ptr());
+                panic!("execv failed");
+            } else {
+                println!("in parent process");
+                waitpid(rc_2, ptr::null_mut(), 0);
+            }
         }
     }
 }
